@@ -158,6 +158,8 @@ def match_from_mem(prev_num, object_tokens, memory, memory_table,frame_id, occup
         indices_obj_to_buffer = indices % occupied_num
     else:
         C = C.cpu()
+        #C=torch.where(torch.isnan(C ), torch.full_like(C, 0), C)
+        #print(C)
         indices = linear_sum_assignment(C.transpose(0, 1))  # target x current
         indices = indices[1]  # permutation that makes current aligns to target
         # associate buffer_id to object_id
@@ -222,7 +224,12 @@ def match_from_embds(tgt_embds, cur_embds):
     C = 1.0 * cost_embd
 
     indices = torch.argmin(C.transpose(0, 1), dim=-1)
-    # permutation that makes current aligns to target
+    # C = C.cpu()
+    # print(C.transpose(0, 1))
+    #
+    # indices = linear_sum_assignment(C.transpose(0, 1))  # target x current
+    # print(indices)
+    # indices = indices[1]  # permutation that makes current aligns to target
     return indices
 
 def rollout_loss(segmentations,masks,smooth):
@@ -230,6 +237,11 @@ def rollout_loss(segmentations,masks,smooth):
         # inputs = F.sigmoid(segmentations[:, 2:])
 
         h,w = segmentations.shape
+        #inputs = segmentations[:, 4:, 1:].reshape(-1, h, w)
+        #targets = masks[:, 4:, 1:].reshape(-1, h, w)
+        #targets = targets > 0.5
+        #print(inputs)
+        #print(targets)
         inputs = segmentations.reshape(-1, h, w)
         targets = masks.reshape(-1, h, w)
         ce_loss = F.binary_cross_entropy(inputs, targets.float())
@@ -244,9 +256,18 @@ def rollout_loss(segmentations,masks,smooth):
         dice = (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
         dice_loss = 1-dice
         total_loss = ce_loss + dice_loss
+
+
+        #return (total_loss) * loss_weight
         return total_loss
 
 def mask_decoder(func,object_tokens,upscaled_embedding_all,object_num,predictor):
+    #src = src.transpose(1, 2).view(b, c, h, w)
+    #upscaled_embedding = mem.output_upscaling(src)
+    #hyper_in_list: List[torch.Tensor] = []
+    #hyper_in_list.append(func(object_tokens))
+    #hyper_in = torch.stack(hyper_in_list, dim=1)
+    #print(object_num)
     de_masks_all=torch.zeros([batch_size,256,256])
     for bs in range(batch_size):
 
@@ -254,20 +275,60 @@ def mask_decoder(func,object_tokens,upscaled_embedding_all,object_num,predictor)
         _,b, c, h, w = upscaled_embedding_all.shape
         b=int(object_num[bs])
         if b>0:
+            #print(object_tokens[bs].shape)
             hyper=func(object_tokens[bs,0:b,:])
             hyper=torch.unsqueeze(hyper,dim=1)
+            #print(object_tokens[bs,b+1,:])
+            #print(object_tokens[bs].sum(dim=1))
             res_masks = (hyper @ upscaled_embedding_all[bs,0:b,:,:,:].view(b, c, h * w)).view(b, -1, h, w)
             
             masks = predictor.model.postprocess_masks(res_masks, predictor.input_size, predictor.original_size)
+            #print(predictor.model.mask_threshold)
+            #masks_bool = masks > predictor.model.mask_threshold
+            #one=torch.ones_like(masks)
             zero=torch.zeros_like(masks)
             #masks=torch.gt(masks,0)
             masks=torch.maximum(masks,zero)
+            #masks=torch.where(masks > predictor.model.mask_threshold,one,zero)
+            #print(masks.sum())
+            #print(masks_bool.sum())
+            #print(masks.sum())
             de_masks_all[bs,:,:]=masks.sum(dim=0).squeeze()
+    #masks=func(object_tokens)
         
+            #print(masks.shape)
+    #masks = predictor.model.postprocess_masks(low_res_masks, self.input_size, self.original_size)
     one=torch.ones_like(de_masks_all)
     de_masks_all=torch.minimum(de_masks_all*100,one)
     return de_masks_all
 
+def visualization_gif(color_list_prev,mem,indices,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir):
+    if frame_id==0:
+        color_list_prev = [np.concatenate([np.random.random(3), np.array([0.6])], axis=0) for _ in range(mem.object_num)]
+    color_list_new = []
+    for i in range(len(indices)):
+        color_list_new.append(color_list_prev[indices[i]])
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image_show)
+    j=0
+    print(boxes_filt_show.shape)
+    for i, mask in enumerate(masks_show):
+        color = color_list_new[i]
+        show_mask(mask.cpu().numpy(), plt.gca(), color, random_color=False)
+    for box, label in zip(boxes_filt_show, pred_phrases_show):
+        print("boxes",j,"\n")
+        show_box(box.cpu().numpy(), plt.gca(), label)
+
+    plt.axis('off')
+    plt.savefig(
+        os.path.join(output_dir, "frame%05d.jpg" % frame_id),
+        bbox_inches="tight", dpi=300, pad_inches=0.0
+    )
+    # image = Image.open(os.path.join(output_dir, "frame%05d.jpg" % frame_id))
+    image = cv2.imread(os.path.join(output_dir, "frame%05d.jpg" % frame_id))
+    
+    return image,color_list_new
+                
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser("Grounded-Segment-Anything Demo", add_help=True)
@@ -395,11 +456,11 @@ if __name__ == "__main__":
                     image=batch_img[f'{frame_id:06d}.input.png'][bs,:,:,:].squeeze()
                     image=np.transpose(image,(2,0,1))
                     #print(image.shape)
+                    #print(image) [0,1]float type
                     #image.
                     boxes_filt, pred_phrases = get_grounding_output(
                         model, image, text_prompt, box_threshold, text_threshold, device=device
                     )
-                    #print(image)
                     input_tensor=image.to(torch.device('cpu')).numpy()
                     in_arr=np.transpose(input_tensor,(1,2,0))
                     image = cv2.cvtColor(np.uint8(in_arr*255), cv2.COLOR_BGR2RGB)
@@ -429,6 +490,9 @@ if __name__ == "__main__":
                         )
                         object_num[bs]=upscaled_embedding.shape[0]
                         upscaled_embedding_all[bs,0:int(object_num[bs]),:,:,:]=upscaled_embedding
+                        #print("object_tokens")
+                        #print(object_tokens.shape)
+
                         masks=masks.float()
                         mask_all[bs,:,:]=masks.sum(dim=0)
                         observation_tokens[bs,0:object_tokens.shape[0],:]=object_tokens
@@ -437,6 +501,7 @@ if __name__ == "__main__":
                             # memory initialization
                             if bs==0:
                                 print("initialization\n\n")
+                                #mem.initialization()
                                 
                                 memory_shape = (batch_size, args.memory_len, mem.object_num, args.embed_dim)
                                 memory_table_shape = (batch_size,mem.object_num)
@@ -453,7 +518,10 @@ if __name__ == "__main__":
                                 mem.memory_table[bs,j]=1
                             prev_num = mem.object_num
                             num_occupied=object_tokens.shape[0]
-
+                        #else:
+                            #memory, num_occupied, color_dict = match_from_mem(prev_num, object_tokens,mem.memory[bs],mem.memory_table[bs],frame_id, num_occupied, #color_list)
+                            #mem.memory[bs,frame_id-1,:,:]=memory[frame_id-1,:,:]
+                            #prev_num = object_tokens.shape[0]
                     # draw output image
                     if bs ==0:
                         masks_show=masks
@@ -464,38 +532,59 @@ if __name__ == "__main__":
 
                     video_id+=1
                 observation_tokens=observation_tokens.to(device)
-                pred=mem(observation_tokens).to(device)
+                pred=observation_tokens
+                if frame_id>0:
+                    pred=mem(observation_tokens).to(device)
+                else:
+                    mem.initialization_sam(observation_tokens,observation_tokens.shape[1])
+
+                
                 indices = match_from_embds(observation_tokens[0,:,:], pred[0,:,:])
                 if frame_id==0:
-                    color_list_prev = [np.concatenate([np.random.random(3), np.array([0.6])], axis=0) for _ in range(mem.object_num)]
-                color_list_new = []
-                for i in range(len(indices)):
-                    color_list_new.append(color_list_prev[indices[i]])
-                color_list_prev=color_list_new
-                plt.figure(figsize=(10, 10))
-                plt.imshow(image_show)
-                for i, mask in enumerate(masks_show):
-                    color = color_list_new[i]
-                    show_mask(mask.cpu().numpy(), plt.gca(), color, random_color=False)
-                for box, label in zip(boxes_filt_show, pred_phrases_show):
-                    show_box(box.cpu().numpy(), plt.gca(), label)
+                    color_list_prev=[]
 
-                plt.axis('off')
-                plt.savefig(
-                    os.path.join(output_dir, "frame%05d.jpg" % frame_id),
-                    bbox_inches="tight", dpi=300, pad_inches=0.0
-                )
-                                # image = Image.open(os.path.join(output_dir, "frame%05d.jpg" % frame_id))
-                image = cv2.imread(os.path.join(output_dir, "frame%05d.jpg" % frame_id))
-                gif.append(image)
+                #visualization
+                img,color_list_prev=visualization_gif(color_list_prev,mem,indices,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir)
+                gif.append(img)
 
+                #print(pred[0,0,:])
+                #for bs in range(batch_size):
+                    #print("mem.memory[bs,video_id-1,:,:].sum(dim=1)")
+                    #print(observation_tokens[bs,:,:].sum(dim=1))
+                    #print(mem.memory[bs,frame_id-1,:,:].sum(dim=1))
+                #print("pred.shape")
+                #print(pred.shape)
                 if frame_id>=3:
                     pred_mask=mask_decoder(sam.mask_decoder.output_hypernetworks_mlps[0],pred,upscaled_embedding_all,object_num,predictor).to(device)
+                    #print("pred")
+                    #print(pred_mask.shape)
                     smooth=0.001
+                    #print(mask_all[0,:,:])
+                    #print(mask_all[0,:,:].sum())
                     mask_all=mask_all.float()#mask_all 0,1 type
+                    
+                    #turn the float type to 0,1 type
+                    #one= torch.ones_like(mask_all)
+                    #mask_all=torch.where(mask_all!=0,one,mask_all)
                     print(mask_all.shape)
+                    """
+                    seg=batch_img[1].to(device)
+                    one= torch.ones_like(seg)
+                    seg=torch.where(seg!=0,one,seg)
+                    seg=seg.sum(dim=1)
+                    one= torch.ones_like(seg)
+                    seg=torch.where(seg!=0,one,seg)
+                    """
+                    
                     for i in range(batch_size):
+                        
                         loss_value=rollout_loss( pred_mask[i,:,:],mask_all[i,:,:],smooth)
+                        #loss_value=torch.tensor(loss_value,requires_grad=False)
+                        #loss2=rollout_loss(mask_all[i,:,:], seg[i,:,:],smooth)
+                        #print(loss_value)
+                        #print(loss2)
+                        #loss2=torch.tensor(float(loss_value))
+                        #print(loss2)
                         loss_list[i,frame_id-3]=loss_value
                     
                             
@@ -507,7 +596,11 @@ if __name__ == "__main__":
             
             loss=loss_list.mean()
             print("loss")
-            print(loss)  
+            print(loss)
+            #loss=torch.float(loss)
+            #loss.requires_grad=True
+            #print(loss.requires_grad)
+            
             loss_list_all[epoch]=loss
             print(loss_list_all[0:(epoch+1)])
             optimizer.zero_grad()
@@ -525,6 +618,7 @@ if __name__ == "__main__":
             os.makedirs("gif", exist_ok=True)
             height, width, _ = gif[0].shape
             size = (width, height)
+    # out = cv2.VideoWriter('./output/videosam.avi', cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
             out = cv2.VideoWriter(f"./output/videosam_{epoch}.avi", 0, 1, (width, height))
 
             for i in range(len(gif)):
@@ -547,3 +641,45 @@ if __name__ == "__main__":
 
         
     writer.close()
+        #for name, parms in mem.named_parameters():	
+            #if name[:27] == "roll_out_module.transformer":
+                #print('-->name:', name)
+                #print('-->device', parms.device)
+            #    print('-->para:', parms)
+                #print('-->grad_requirs:',parms.requires_grad)
+               # print('-->grad_value:',parms.grad.sum())
+        #        print("===")
+    
+    #torch.save(loss_list_all,"/home/ubuntu/exp/mem-videosam-main/log/loss.pt")
+    #lo=torch.load("/home/ubuntu/exp/mem-videosam-main/log/loss.npy")
+    #ar=loss_list_all.detach().cpu().numpy()
+    #np.save("/home/ubuntu/exp/mem-videosam-main/log/loss.npy", ar)
+    #enc = np.load("/home/ubuntu/exp/mem-videosam-main/log/loss.npz.npy")
+    #print(lo)
+    """
+    
+    with torch.no_grad():
+        if batch % log_interval == 0:
+            #print('Train Epoch: {:3} [{:5}/{:5}] \t Loss: {:F} \t MSE: {:F}'.format(epoch+1, batch, train_epoch_size, loss.item(), mse.item()))               
+            writer.add_scalar('TRAIN/loss', loss.item(), global_step)
+
+    with torch.no_grad():
+        recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
+        grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
+        writer.add_image('TRAIN_recons/epoch={:03}'.format(epoch+1), grid)
+        checkpoint = {
+            #'epoch': epoch + 1,
+            #'best_val_loss': best_val_loss,
+            #'best_epoch': best_epoch,
+            'model': mem.state_dict(),
+            'optimizer': optimizer.state_dict(),
+        }
+
+        torch.save(checkpoint, os.path.join(args.log_dir, 'checkpoint.pt.tar'))
+    """
+    
+        
+        # store tracklets into pkl file
+
+    
+
