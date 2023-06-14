@@ -125,6 +125,18 @@ class SelfSupervisedMemory(nn.Module):
         return valid_idx
 
 
+    def initialization_sam(self, conditions, num_obj):
+        # For each video, we should initialize the register buffers as zero
+        bs = conditions.shape[0]
+        memory_shape = (bs, self.memory_len, self.object_num, self.embed_dim)
+        memory_table_shape = (bs, self.object_num)
+        stale_counter_shape = (bs, self.object_num)
+        self.memory = torch.zeros(memory_shape).to(conditions.device)
+        self.memory_table = torch.zeros(memory_table_shape).to(conditions.device)
+        self.stale_counter = torch.zeros(stale_counter_shape).to(conditions.device)
+        for b in range(bs):
+            self.memory[b, 0, :num_obj+1, :] = conditions[b, :num_obj+1, :]
+            self.memory_table[b, :num_obj+1] += 1
 
     def initialization(self, box, conditions, cur_slots, cur_slot_masks, prev_slot_masks, amodal_masks, frame_id):
         if frame_id == 0:
@@ -298,10 +310,11 @@ class SelfSupervisedMemory(nn.Module):
             #             predictions[b, i] = self.memory[b, pos-1, i]
 
         #print(observations.device)
-        print(predictions.grad_fn)
+        #print(predictions.grad_fn)
+        eval=False
         object_features, weights, attn_index, mask_o_p = self.sms_attn(observations, predictions, eval_flag=eval)
         #print(mask_o_p.shape)
-        object_features[:, 0] = observations[:, 3]
+        #object_features[:, 0] = observations[:, 3]
         
             # memory update
         #print("object_features.shape")
