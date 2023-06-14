@@ -1,0 +1,9 @@
+# ninja log v5
+1	1439	1684331182190072180	/home/ubuntu/exp/videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/cuda_version.o	2d24bc03fc36c652
+0	11544	1684331192274042642	/home/ubuntu/exp/videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cpu.o	eb8447de4cc2e9ca
+0	20728	1684331201470015704	/home/ubuntu/exp/videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cuda.o	3655287c04b94da6
+1	29167	1684331209885991052	/home/ubuntu/exp/videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/vision.o	5e9072375b2140b0
+7	1499	1684436929839291691	/home/ubuntu/exp/mem-videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/mem-videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/cuda_version.o	94e832cf1eefe1e3
+6	9256	1684436937579253824	/home/ubuntu/exp/mem-videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/mem-videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cpu.o	27c331473cf9b22c
+7	18637	1684436946963207913	/home/ubuntu/exp/mem-videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/mem-videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/MsDeformAttn/ms_deform_attn_cuda.o	235935482ff3ccb4
+8	27150	1684436955459166347	/home/ubuntu/exp/mem-videosam-main/GroundingDINO/build/temp.linux-x86_64-cpython-38/home/ubuntu/exp/mem-videosam-main/GroundingDINO/groundingdino/models/GroundingDINO/csrc/vision.o	56de330e8e1ffa0e
