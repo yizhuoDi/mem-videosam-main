@@ -10,6 +10,7 @@ from GroundingDINO.groundingdino.models import build_model
 from GroundingDINO.groundingdino.util import box_ops
 from GroundingDINO.groundingdino.util.slconfig import SLConfig
 from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
+from GroundingDINO.groundingdino.util.inference import load_image, predict, annotate
 import numpy as np
 # segment anything
 from segment_anything import build_sam, SamPredictor
@@ -30,17 +31,21 @@ import torch.nn.functional as F
 
 from torchvision import transforms
 
+transform = T.Compose(
+    [
+        T.RandomResize([256], max_size=1333),
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+    ]
+)
 
-normalize = transforms.Normalize(
-    mean=[0.485, 0.456, 0.406],
-    std=[0.229, 0.224, 0.225])
+unloader = transforms.ToPILImage()
 
-preproc = transforms.Compose([
-    transforms.RandomResizedCrop(224),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    #normalize,
-])
+def tensor_to_PIL(tensor):
+    image = tensor.cpu().clone()
+    image = image.squeeze(0)
+    image = unloader(image)
+    return image
 
 def visualize(image, recon_dvae, recon_tf, attns, N=8):
 
@@ -131,7 +136,7 @@ def show_mask(mask, ax, color, random_color=False):
 def show_box(box, ax, label):
     x0, y0 = box[0], box[1]
     w, h = box[2] - box[0], box[3] - box[1]
-    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0, 0, 0, 0), lw=2))
+    ax.add_patch(plt.Rectangle((x0, y0), w, h, edgecolor='green', facecolor=(0, 0, 0, 0), lw=4))
     # ax.text(x0, y0, label)
 
 def match_from_mem(prev_num, object_tokens, memory, memory_table,frame_id, occupied_num, color_list, history_length = 10):
@@ -237,16 +242,9 @@ def rollout_loss(segmentations,masks,smooth):
         # inputs = F.sigmoid(segmentations[:, 2:])
 
         h,w = segmentations.shape
-        #inputs = segmentations[:, 4:, 1:].reshape(-1, h, w)
-        #targets = masks[:, 4:, 1:].reshape(-1, h, w)
-        #targets = targets > 0.5
-        #print(inputs)
-        #print(targets)
         inputs = segmentations.reshape(-1, h, w)
         targets = masks.reshape(-1, h, w)
         ce_loss = F.binary_cross_entropy(inputs, targets.float())
-        #print("ce_loss")
-        #print(ce_loss)
 
         # flatten label and prediction tensors
         inputs = inputs.reshape(-1)
@@ -256,9 +254,6 @@ def rollout_loss(segmentations,masks,smooth):
         dice = (2. * intersection + smooth) / (inputs.sum() + targets.sum() + smooth)
         dice_loss = 1-dice
         total_loss = ce_loss + dice_loss
-
-
-        #return (total_loss) * loss_weight
         return total_loss
 
 def mask_decoder(func,object_tokens,upscaled_embedding_all,object_num,predictor):
@@ -302,21 +297,43 @@ def mask_decoder(func,object_tokens,upscaled_embedding_all,object_num,predictor)
     de_masks_all=torch.minimum(de_masks_all*100,one)
     return de_masks_all
 
-def visualization_gif(color_list_prev,mem,indices,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir):
-    if frame_id==0:
-        color_list_prev = [np.concatenate([np.random.random(3), np.array([0.6])], axis=0) for _ in range(mem.object_num)]
-    color_list_new = []
-    for i in range(len(indices)):
-        color_list_new.append(color_list_prev[indices[i]])
+def EM_loss(pred_feature, tgt_feature,attn_index):
+    #rec_tgt = rec_tgt.reshape(-1,3,h,w).unsqueeze(1).unsqueeze(2).repeat(1,n_slots,n_buffer,1,1,1)
+    #reconstructions = reconstructions.reshape(-1, n_buffer, 3, h, w).unsqueeze(1).repeat(1,n_slots,1,1,1,1)
+    #rec_pred = reconstructions * masks_vis
+    #rec_tgt_ = rec_tgt * masks_vis
+    #loss = torch.sum(F.binary_cross_entropy(segmentations, masks.float(), reduction = 'none'), (-1,-2)) / (h*w) + 0.1 * torch.sum(self.loss_fn(rec_pred, rec_tgt_), (-3,-2,-1))
+        # be = torch.sum(F.binary_cross_entropy(segmentations, masks.float(), reduction = 'none'), (-1,-2)) / (h*w)
+        # rec = 0.1 * torch.sum(self.loss_fn(rec_pred, rec_tgt_), (-3,-2,-1))
+        # print(be[0,1,1], rec[0,1,1])
+    loss_weight=1
+    b=attn_index.shape[0]
+    n_obj=tgt_feature.shape[1]
+    n_buffer=pred_feature.shape[1]
+    loss=torch.sum(F.mse_loss(pred_feature, tgt_feature, reduction="none"), (-3,-2,-1))
+    total_loss = torch.sum(attn_index * loss, (0,1,2)) / (b  * n_obj * n_buffer)
+    return (total_loss) * loss_weight
+
+def visualization_gif(mem,indices,image_show,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir):
+    color_list_new=[]
+    color_list_all = [np.array([1,1,1,0.6]),np.array([0,1,0,0.6]),np.array([1,0,0,0.6]),np.array([0,1,1,0.6]),np.array([0,0,1,0.6]),np.array([1,0,0,0.6])]
+    color_list_new = color_list_all
+    if frame_id>0:
+        print(indices)
+        for i in range(len(indices)):
+            color_list_new.append(color_list_all[indices[i]])
     plt.figure(figsize=(10, 10))
     plt.imshow(image_show)
     j=0
-    print(boxes_filt_show.shape)
+    #print(boxes_filt_show.shape)
     for i, mask in enumerate(masks_show):
+        print(i)
+
         color = color_list_new[i]
+        print(color)
         show_mask(mask.cpu().numpy(), plt.gca(), color, random_color=False)
     for box, label in zip(boxes_filt_show, pred_phrases_show):
-        print("boxes",j,"\n")
+        #print("boxes",j,"\n")
         show_box(box.cpu().numpy(), plt.gca(), label)
 
     plt.axis('off')
@@ -356,7 +373,7 @@ if __name__ == "__main__":
     parser.add_argument('--embed_dim', type=int, default=256)
     parser.add_argument('--num_objects', type=int, default=6)
     parser.add_argument('--memory_len', type=int, default=8)
-    parser.add_argument('--epoch_num', type=int, default=100)
+    parser.add_argument('--epoch_num', type=int, default=400)
     parser.add_argument('--log_path', type=str, default="/home/ubuntu/exp/mem-videosam-main/log")
     parser.add_argument('--output_path', type=str, default="/home/ubuntu/exp/mem-videosam-main/output")
     parser.add_argument('--video_len', type=int, default=8)
@@ -364,25 +381,17 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     device=args.device
-
+    vis_batch=2
     output_dir=args.output_path
+
     #import memory module
     mem=SelfSupervisedMemory(embed_dim=args.embed_dim,num_objects=args.num_objects,memory_len=args.memory_len)
-    #mem=SelfSupervisedMemory(args)
     mem=mem.to(device)
     batch_size=8
 
     log_dir = os.path.join(args.log_path, datetime.today().isoformat())
     writer = SummaryWriter(log_dir)
-    #writer.add_text('hparams', arg_str)
-
     optimizer = Adam(mem.parameters(), lr = 0.001)  
-    #optimizer = Adam([
-    #{'params': (x[1] for x in mem.named_parameters() if 'roll_out_module' in x[0]), 'lr': args.lr_roll},
-    #{'params': (x[1] for x in mem.named_parameters() if 'MultiHead_1' in x[0]), 'lr': 0.01},
-    #{'params': (x[1] for x in mem.named_parameters() if 'MultiHead_2' in x[0]), 'lr': 0.01},
-    #])
-    
     # cfg
     config_file = args.config  # change the path of the model config file
     grounded_checkpoint = args.grounded_checkpoint  # change the path of the model
@@ -410,41 +419,24 @@ if __name__ == "__main__":
     # load model
     model = load_model(config_file, grounded_checkpoint, device=device)
     num_occupied = 0
-    gif = []
     color_dict = {}
-    """
-    train_dataset = (
-        wds.WebDataset(args.train_data_path, shardshuffle=True)
-        .shuffle(100)
-        .decode("pil")
-        .to_tuple("input.png","mask.png")
-        .map_tuple(preproc,preproc)
-    )
-    """
+
     train_dataset = wds.WebDataset(args.train_data_path,shardshuffle=True).shuffle(100).decode("rgb")
-    #loader = wds.WebLoader(ds, num_workers=1, batch_size=4)
     loader = wds.WebLoader(train_dataset, num_workers=1, batch_size=batch_size)
     video_id=0
     mem.train()
-    #frame_id=1
 
-    
     loss_list_all=torch.zeros([args.epoch_num],requires_grad=False)
     num=0
-    #loss=torch.zeros([1])
-    #loss.requires_grad=True
     for epoch in range(args.epoch_num):
         print("=================> Epoch:  ", epoch)
         mem.train()
         loss_list=torch.zeros([batch_size,video_lenth-3]).to(device)
-        #frame_id=1
+        loss_list_EM=torch.zeros([video_lenth-3]).to(device)
         
         for batch,batch_img in enumerate(loader):
             gif = []
             for frame_id in range(video_lenth):
-                #print("batch_img.shape")
-                #print(batch)
-                #print(batch_img[0].shape)
                 video_id=0
                 observation_tokens=torch.zeros([batch_size,mem.object_num,mem.embed_dim],requires_grad=False).to(device)
                 mask_all=torch.zeros([batch_size,256,256]).to(device)
@@ -453,21 +445,21 @@ if __name__ == "__main__":
                 for bs in range(batch_size):
                     print("*************Processing video ", video_id, "frame ", frame_id)
                     # run grounding dino model
-                    image=batch_img[f'{frame_id:06d}.input.png'][bs,:,:,:].squeeze()
-                    image=np.transpose(image,(2,0,1))
-                    #print(image.shape)
-                    #print(image) [0,1]float type
+                    image_input=batch_img[f'{frame_id:06d}.input.png'][bs,:,:,:].squeeze()
+                    image=np.transpose(image_input,(2,0,1))
+                    image=tensor_to_PIL(image)
+                    image, _ = transform(image, None)
+                    
                     #image.
                     boxes_filt, pred_phrases = get_grounding_output(
                         model, image, text_prompt, box_threshold, text_threshold, device=device
                     )
+
                     input_tensor=image.to(torch.device('cpu')).numpy()
                     in_arr=np.transpose(input_tensor,(1,2,0))
                     image = cv2.cvtColor(np.uint8(in_arr*255), cv2.COLOR_BGR2RGB)
                     predictor.set_image(image)
-                    #print(image)
                     size = image.shape
-                    #print(size)
                     H, W = size[1], size[0]
                     #print(boxes_filt.size(0))
                     for i in range(boxes_filt.size(0)):
@@ -499,18 +491,14 @@ if __name__ == "__main__":
 
                         if frame_id == 0:
                             # memory initialization
-                            if bs==0:
-                                print("initialization\n\n")
+                            #if bs==0:
+                                #print("initialization\n\n")
                                 #mem.initialization()
                                 
-                                memory_shape = (batch_size, args.memory_len, mem.object_num, args.embed_dim)
-                                memory_table_shape = (batch_size,mem.object_num)
+                                #memory_shape = (batch_size, args.memory_len, mem.object_num, args.embed_dim)
+                                #memory_table_shape = (batch_size,mem.object_num)
                                 #mem.memory = torch.zeros(memory_shape)
                                 #mem.memory_table = torch.zeros(memory_table_shape)
-                                print(mem.memory.device)
-                                print(mem.memory_table.device)
-                                print(mem.memory.shape)
-                                print(memory_shape)
                             for i in range(mem.object_num):
                                 color_dict[str(i)]=color_list[i]
                             for j in range(object_tokens.shape[0]):
@@ -523,84 +511,48 @@ if __name__ == "__main__":
                             #mem.memory[bs,frame_id-1,:,:]=memory[frame_id-1,:,:]
                             #prev_num = object_tokens.shape[0]
                     # draw output image
-                    if bs ==0:
+                    if bs ==vis_batch:
                         masks_show=masks
                         boxes_filt_show=boxes_filt
                         pred_phrases_show= pred_phrases
-
-                        image_show=image
+                        image_show=image_input
 
                     video_id+=1
                 observation_tokens=observation_tokens.to(device)
                 pred=observation_tokens
                 if frame_id>0:
-                    pred=mem(observation_tokens).to(device)
+                    pred,attn_index=mem(observation_tokens)
+                    pred=pred.to(device)
+                    attn_index=attn_index.to(device)
                 else:
                     mem.initialization_sam(observation_tokens,observation_tokens.shape[1])
 
-                
-                indices = match_from_embds(observation_tokens[0,:,:], pred[0,:,:])
-                if frame_id==0:
-                    color_list_prev=[]
-
                 #visualization
-                img,color_list_prev=visualization_gif(color_list_prev,mem,indices,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir)
+                indices=[]
+                if frame_id>0:
+                    indices=torch.argmin(attn_index.transpose(0, 1), dim=-1)
+                    indices=indices[:,vis_batch]
+                img=visualization_gif(mem,indices,image_show,masks_show,boxes_filt_show, pred_phrases_show,frame_id,output_dir)
+                img = Image.fromarray(img, mode='RGB')
                 gif.append(img)
 
-                #print(pred[0,0,:])
-                #for bs in range(batch_size):
-                    #print("mem.memory[bs,video_id-1,:,:].sum(dim=1)")
-                    #print(observation_tokens[bs,:,:].sum(dim=1))
-                    #print(mem.memory[bs,frame_id-1,:,:].sum(dim=1))
-                #print("pred.shape")
-                #print(pred.shape)
                 if frame_id>=3:
                     pred_mask=mask_decoder(sam.mask_decoder.output_hypernetworks_mlps[0],pred,upscaled_embedding_all,object_num,predictor).to(device)
-                    #print("pred")
-                    #print(pred_mask.shape)
                     smooth=0.001
-                    #print(mask_all[0,:,:])
-                    #print(mask_all[0,:,:].sum())
                     mask_all=mask_all.float()#mask_all 0,1 type
-                    
-                    #turn the float type to 0,1 type
-                    #one= torch.ones_like(mask_all)
-                    #mask_all=torch.where(mask_all!=0,one,mask_all)
-                    print(mask_all.shape)
-                    """
-                    seg=batch_img[1].to(device)
-                    one= torch.ones_like(seg)
-                    seg=torch.where(seg!=0,one,seg)
-                    seg=seg.sum(dim=1)
-                    one= torch.ones_like(seg)
-                    seg=torch.where(seg!=0,one,seg)
-                    """
-                    
-                    for i in range(batch_size):
-                        
-                        loss_value=rollout_loss( pred_mask[i,:,:],mask_all[i,:,:],smooth)
-                        #loss_value=torch.tensor(loss_value,requires_grad=False)
-                        #loss2=rollout_loss(mask_all[i,:,:], seg[i,:,:],smooth)
-                        #print(loss_value)
-                        #print(loss2)
-                        #loss2=torch.tensor(float(loss_value))
-                        #print(loss2)
-                        loss_list[i,frame_id-3]=loss_value
-                    
+            
+
+                    #loss compute
+                    loss_value_EM=EM_loss(pred,observation_tokens,attn_index)
+                    loss_list_EM[frame_id-3]=loss_value_EM
                             
-                    #frame_id+=1
                     if frame_id>video_lenth:
                         break
 
-            global_step=epoch + batch
             
-            loss=loss_list.mean()
+            loss=loss_list_EM.mean()
             print("loss")
             print(loss)
-            #loss=torch.float(loss)
-            #loss.requires_grad=True
-            #print(loss.requires_grad)
-            
             loss_list_all[epoch]=loss
             print(loss_list_all[0:(epoch+1)])
             optimizer.zero_grad()
@@ -611,28 +563,21 @@ if __name__ == "__main__":
             #        print('-->grad_requirs:',parms.requires_grad)
                     #print('-->grad_value:',parms.grad)
             #        print("===")
-
             loss.backward()
-            writer.add_scalar('TRAIN/loss', loss.item(), global_step)
-            #loss.detach()
-            os.makedirs("gif", exist_ok=True)
-            height, width, _ = gif[0].shape
-            size = (width, height)
-    # out = cv2.VideoWriter('./output/videosam.avi', cv2.VideoWriter_fourcc(*'DIVX'), 15, size)
-            out = cv2.VideoWriter(f"./output/videosam_{epoch}.avi", 0, 1, (width, height))
-
-            for i in range(len(gif)):
-                out.write(gif[i])
-            cv2.destroyAllWindows()
-            out.release()
-            #frame_one = gif
-            #frame_one.save(f"./gif/video_{epoch}.gif", format="GIF", append_images=gif,save_all=True, duration=100, loop=0)
             optimizer.step()
 
+            global_step=epoch + batch
+            writer.add_scalar('TRAIN/loss', loss.item(), global_step)
+            
+
+            #save the gif
+            os.makedirs("gif", exist_ok=True)
+            frame_one = gif[0]
+            frame_one.save(f"./gif/video_{epoch}.gif", format="GIF", append_images=gif,
+               save_all=True, duration=100, loop=0)
+
+
         checkpoint = {
-            #'epoch': epoch + 1,
-            #'best_val_loss': best_val_loss,
-            #'best_epoch': best_epoch,
             'model': mem.state_dict(),
             'optimizer': optimizer.state_dict(),
         }
@@ -641,45 +586,4 @@ if __name__ == "__main__":
 
         
     writer.close()
-        #for name, parms in mem.named_parameters():	
-            #if name[:27] == "roll_out_module.transformer":
-                #print('-->name:', name)
-                #print('-->device', parms.device)
-            #    print('-->para:', parms)
-                #print('-->grad_requirs:',parms.requires_grad)
-               # print('-->grad_value:',parms.grad.sum())
-        #        print("===")
-    
-    #torch.save(loss_list_all,"/home/ubuntu/exp/mem-videosam-main/log/loss.pt")
-    #lo=torch.load("/home/ubuntu/exp/mem-videosam-main/log/loss.npy")
-    #ar=loss_list_all.detach().cpu().numpy()
-    #np.save("/home/ubuntu/exp/mem-videosam-main/log/loss.npy", ar)
-    #enc = np.load("/home/ubuntu/exp/mem-videosam-main/log/loss.npz.npy")
-    #print(lo)
-    """
-    
-    with torch.no_grad():
-        if batch % log_interval == 0:
-            #print('Train Epoch: {:3} [{:5}/{:5}] \t Loss: {:F} \t MSE: {:F}'.format(epoch+1, batch, train_epoch_size, loss.item(), mse.item()))               
-            writer.add_scalar('TRAIN/loss', loss.item(), global_step)
-
-    with torch.no_grad():
-        recon_tf = (model.module if args.use_dp else model).reconstruct_autoregressive(image[:8])
-        grid = visualize(image, recon_dvae, recon_tf, attns, N=8)
-        writer.add_image('TRAIN_recons/epoch={:03}'.format(epoch+1), grid)
-        checkpoint = {
-            #'epoch': epoch + 1,
-            #'best_val_loss': best_val_loss,
-            #'best_epoch': best_epoch,
-            'model': mem.state_dict(),
-            'optimizer': optimizer.state_dict(),
-        }
-
-        torch.save(checkpoint, os.path.join(args.log_dir, 'checkpoint.pt.tar'))
-    """
-    
-        
-        # store tracklets into pkl file
-
-    
-
+  
