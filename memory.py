@@ -1,4 +1,4 @@
-import torch
+、import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -227,14 +227,6 @@ class SelfSupervisedMemory(nn.Module):
 
         # replace the attn_p_to_o with predictions if the buffer is not assigned
         if eval_flag:
-            b, h, w = weights.shape
-            weights_new = torch.zeros((b, h + 1, w)).to(attn_o_to_p.device)  # [b, n+1, m]
-            weights_new[:, 0:h, :] = weights
-            weights_new[:, h, :] = torch.sum(weights, dim=1)
-            weights_new_convert_zero = weights_new[:, h, :].clone()
-            weights_new_convert_zero[weights_new[:, h, :] == 0] = 1
-            weights_new_convert_zero[weights_new[:, h, :] > 0] = 0
-            weights_new[:, h, :] = weights_new_convert_zero
             b_p, h_p, w_p = attn_p_to_o.shape # merged features
             for j in range(b_p):
                 index = weights_new[j, h, :].nonzero(as_tuple=True)[0]  # hard index
@@ -295,11 +287,7 @@ class SelfSupervisedMemory(nn.Module):
         #else:
         #self.memory =self.memory.cuda
         #self.memory_table= self.memory_table.cuda()
-        #print(self.memory.device)
-        #print(self.memory_table.device)
-        #print(self.roll_out_module.device)
-        #print(self.memory.shape)
-        #print(self.memory_table.shape)
+
         predictions = self.roll_out_module(self.memory, self.memory_table)
             # predictions = self.memory[:, -1].clone()
             # bs, num_buffer = predictions.shape[:2]
@@ -308,12 +296,8 @@ class SelfSupervisedMemory(nn.Module):
             #         pos = self.memory_table[b, i].cpu().numpy().astype(int)
             #         if pos>0:
             #             predictions[b, i] = self.memory[b, pos-1, i]
-
-        #print(observations.device)
-        #print(predictions.grad_fn)
         eval=False
         object_features, weights, attn_index, mask_o_p = self.sms_attn(observations, predictions, eval_flag=eval)
-        #print(mask_o_p.shape)
         #object_features[:, 0] = observations[:, 3]
         
             # memory update
@@ -325,13 +309,7 @@ class SelfSupervisedMemory(nn.Module):
         # memory terminate
         # if eval:
         #     self.buffer_terminate()
-        return predictions
-        #return #MemoryOutputpredictions
-            #object_features=object_features,
-            #mem = self.memory,
-            #eval_mem_features = object_features,
-            #table = self.memory_table,
-            #attn_index=attn_index,
-        #)
+        return predictions,attn_index
+
 
 
