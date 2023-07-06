@@ -1,0 +1,11 @@
+2023-7-6
+The current version of the code has saved the box and object tokens data obtained from the DINO-SAM process in order to speed up the training process. 
+The saved data is then directly extracted for training, resulting in faster training speeds.
+
+videosam.py
+The implemented version of the code runs on a single GPU and can be launched using the train.sh script.
+No issues have been identified at this time.
+
+videosam_test.py
+Attempted to implement code to run on 4 GPUs using DistributedDataParallel, but encountered frequent errors during runtime.
+The root cause of the errors has not been identified yet, and further investigation is necessary
